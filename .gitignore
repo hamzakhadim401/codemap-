@@ -1,0 +1,10 @@
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Generated CLI outputs
+outputs/
+
+# Runtime database (created by server.py)
+codemap.db

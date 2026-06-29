@@ -1,0 +1,56 @@
+version: "3.9"
+
+# Visual Codebase Mapping Platform — full production stack
+#
+# Start everything:
+#   docker-compose up -d
+#
+# First run (creates DB tables):
+#   docker-compose up -d
+#
+# View logs:
+#   docker-compose logs -f codemap
+#
+# Stop:
+#   docker-compose down
+#
+# Destroy everything including the DB volume:
+#   docker-compose down -v
+
+services:
+
+  # ── PostgreSQL ─────────────────────────────────────────────────────────────
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB:       codemap
+      POSTGRES_USER:     codemap
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-changeme}
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U codemap"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # ── CodeMap server ─────────────────────────────────────────────────────────
+  codemap:
+    build: .
+    restart: unless-stopped
+    ports:
+      - "${CODEMAP_PORT:-8000}:8000"
+    environment:
+      DATABASE_URL:      postgresql://codemap:${POSTGRES_PASSWORD:-changeme}@db:5432/codemap
+      CODEMAP_API_KEY:   ${CODEMAP_API_KEY:-}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+    volumes:
+      # Persist CLI-generated HTML files across container restarts
+      - ./outputs:/app/outputs
+    depends_on:
+      db:
+        condition: service_healthy
+
+volumes:
+  pg_data:

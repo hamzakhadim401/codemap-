@@ -1,0 +1,16 @@
+# Static analysis (multi-language support)
+tree-sitter>=0.22.0
+tree-sitter-javascript>=0.22.0
+tree-sitter-typescript>=0.22.0
+
+# PostgreSQL backend (optional — only needed when DATABASE_URL is set)
+psycopg2-binary>=2.9.9
+
+# Natural-language query layer (optional — Phase 5)
+# Enables AI-powered graph search via Claude Haiku in the command palette.
+# Set ANTHROPIC_API_KEY env var to activate; keyword search works without it.
+# anthropic>=0.30.0
+
+# ML introspection (optional — only needed for Stage 4 / ML repos)
+# torch>=2.0.0
+# tensorflow>=2.15.0    # or tf-nightly for ARM Mac

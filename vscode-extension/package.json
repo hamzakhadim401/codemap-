@@ -1,0 +1,53 @@
+{
+  "name": "codemap-sync",
+  "displayName": "CodeMap Sync",
+  "description": "Bidirectional click-sync between VS Code and the CodeMap graph visualizer",
+  "version": "0.1.0",
+  "publisher": "codemap",
+  "engines": { "vscode": "^1.125.0" },
+  "categories": ["Other"],
+  "activationEvents": ["onStartupFinished"],
+  "main": "./out/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "codemap.connect",
+        "title": "CodeMap: Connect to server"
+      },
+      {
+        "command": "codemap.disconnect",
+        "title": "CodeMap: Disconnect"
+      },
+      {
+        "command": "codemap.revealCurrent",
+        "title": "CodeMap: Reveal current file in graph"
+      }
+    ],
+    "configuration": {
+      "title": "CodeMap",
+      "properties": {
+        "codemap.serverUrl": {
+          "type": "string",
+          "default": "http://localhost:8000",
+          "description": "URL of the running CodeMap server"
+        },
+        "codemap.pollIntervalMs": {
+          "type": "number",
+          "default": 1000,
+          "description": "How often (ms) to poll the server for graph selections"
+        }
+      }
+    }
+  },
+  "scripts": {
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "package": "vsce package --allow-missing-repository"
+  },
+  "devDependencies": {
+    "@types/node": "^20.19.43",
+    "@types/vscode": "^1.125.0",
+    "@vscode/vsce": "^3.9.2",
+    "typescript": "^5.9.3"
+  }
+}
