@@ -19,12 +19,16 @@ Endpoints:
 """
 import argparse
 import http.server
+import io
 import json
 import os
 import re
+import shutil
 import socketserver
+import tempfile
 import threading
 import traceback
+import zipfile
 from pathlib import Path
 from typing import Optional, Tuple
 from urllib.parse import urlparse
@@ -68,12 +72,15 @@ _PUBLIC_ROUTES: set = {
 # ---------------------------------------------------------------------------
 
 def _run_analysis(pid: str, source: str, confidential: bool,
-                  trace_cmd: Optional[str], incremental: bool = False) -> None:
+                  trace_cmd: Optional[str], incremental: bool = False,
+                  _zip_tmp: Optional[str] = None) -> None:
     """
     Runs in a daemon thread. Updates the DB as it goes.
 
     incremental=True: load the per-file parse cache from the DB and skip
     re-parsing unchanged files.  Has no effect for confidential jobs (no DB).
+    _zip_tmp: if set, this temp directory is deleted unconditionally after
+    analysis (used when a zip was uploaded and extracted to a temp dir).
     """
     store.set_running(pid)
     result = None
@@ -110,14 +117,17 @@ def _run_analysis(pid: str, source: str, confidential: bool,
     finally:
         if result:
             cleanup(result)
+        if _zip_tmp:
+            shutil.rmtree(_zip_tmp, ignore_errors=True)
 
 
 def _spawn_analysis(pid: str, source: str, confidential: bool = False,
                     trace_cmd: Optional[str] = None,
-                    incremental: bool = False) -> None:
+                    incremental: bool = False,
+                    _zip_tmp: Optional[str] = None) -> None:
     t = threading.Thread(
         target=_run_analysis,
-        args=(pid, source, confidential, trace_cmd, incremental),
+        args=(pid, source, confidential, trace_cmd, incremental, _zip_tmp),
         daemon=True,
     )
     t.start()
@@ -135,11 +145,58 @@ def _list_projects(_body) -> Tuple[int, list]:
     return 200, store.list_projects()
 
 
-def _post_projects(body) -> Tuple[int, dict]:
-    if not body or "source" not in body:
-        return 400, {"error": "'source' is required"}
+def _post_projects_zip(handler) -> Tuple[int, dict]:
+    """
+    POST /projects/upload  — raw zip body (Content-Type: application/zip).
+    Extracts to a temp dir, registers a project, and queues analysis.
+    The temp dir is cleaned up unconditionally after analysis finishes.
+    """
+    content_type = (handler.headers.get("Content-Type") or "").strip().lower()
+    if not content_type.startswith("application/zip"):
+        return 400, {"error": "Content-Type must be application/zip"}
 
-    source = body["source"]
+    length = int(handler.headers.get("Content-Length") or 0)
+    if not length:
+        return 400, {"error": "Empty upload body"}
+    if length > 500 * 1024 * 1024:
+        return 413, {"error": "Zip file too large (max 500 MB)"}
+
+    raw_name = (handler.headers.get("X-Map-Name") or "").strip()
+    zip_bytes = handler.rfile.read(length)
+
+    tmp = tempfile.mkdtemp(prefix="codemap_zip_")
+    try:
+        with zipfile.ZipFile(io.BytesIO(zip_bytes)) as zf:
+            for member in zf.namelist():
+                # Reject path traversal attempts
+                if ".." in member or member.startswith(("/", "\\")):
+                    shutil.rmtree(tmp, ignore_errors=True)
+                    return 400, {"error": "Zip contains unsafe paths"}
+            zf.extractall(tmp)
+    except zipfile.BadZipFile:
+        shutil.rmtree(tmp, ignore_errors=True)
+        return 400, {"error": "Invalid or corrupted zip file"}
+    except Exception as ex:
+        shutil.rmtree(tmp, ignore_errors=True)
+        return 500, {"error": str(ex)}
+
+    # If the zip has a single top-level folder, analyse inside it
+    entries = list(Path(tmp).iterdir())
+    working_dir = str(entries[0]) if (len(entries) == 1 and entries[0].is_dir()) else tmp
+    name = raw_name or Path(working_dir).name.replace(".zip", "")
+
+    pid = store.create_project(working_dir, name)
+    _spawn_analysis(pid, working_dir, confidential=False, _zip_tmp=tmp)
+    return 202, {"id": pid, "status": "pending", "name": name}
+
+
+def _post_projects(body) -> Tuple[int, dict]:
+    if not body:
+        return 400, {"error": "'source' is required"}
+    # Accept both 'source' (canonical) and 'repo_url'/'repo_path' (frontend aliases)
+    source = (body.get("source") or body.get("repo_url") or body.get("repo_path") or "").strip()
+    if not source:
+        return 400, {"error": "'source' is required (git URL or local path)"}
     raw_name = (body.get("name") or "").strip().strip('"\'').strip()
     name = raw_name or Path(source.rstrip("/\\")).name.replace(".git", "").strip().strip('"\'').strip()
     confidential = bool(body.get("confidential", False))
@@ -673,6 +730,16 @@ class _Handler(http.server.BaseHTTPRequestHandler):
             self._send(status, data)
             return
 
+        # Zip upload — must be intercepted before _read_body() which expects JSON
+        if method == "POST" and path == "/projects/upload":
+            try:
+                status, data = _post_projects_zip(self)
+            except Exception:
+                status, data = 500, {"error": "Internal server error"}
+                traceback.print_exc()
+            self._send(status, data)
+            return
+
         body = self._read_body() if method in ("POST", "PUT", "PATCH") else None
         try:
             status, data = _dispatch(method, path, body)
@@ -685,7 +752,7 @@ class _Handler(http.server.BaseHTTPRequestHandler):
         self.send_response(204)
         self.send_header("Access-Control-Allow-Origin", "*")
         self.send_header("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS")
-        self.send_header("Access-Control-Allow-Headers", "Content-Type, X-Api-Key")
+        self.send_header("Access-Control-Allow-Headers", "Content-Type, X-Api-Key, X-Session-Token, X-Map-Name")
         self.end_headers()
 
     def do_GET(self):
